@@ -11,6 +11,20 @@ from email.mime.multipart import MIMEMultipart
 from colorama import Fore, init
 from tabulate import tabulate
 import streamlit as st
+import plotly.express as px
+import os
+import streamlit as st
+import pandas as pd
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage, SystemMessage
+
+
+# Load API key and initialize model
+load_dotenv()
+api_key = os.getenv("GOOGLE_API_KEY")
+os.environ["GOOGLE_API_KEY"] = api_key
+model = init_chat_model("gemini-2.0-flash", model_provider="google_genai")
 
 try:
     from plyer import notification
@@ -474,10 +488,269 @@ def check_reminders_and_send():
         for name, _, lvl in reminders_to_send:
             pipeline_status[name]["reminder"] = lvl
 
+def fetch_pipeline_runs(table_name="PipelineRuns"):
+    try:
+        conn = pymysql.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        query = f"SELECT * FROM {table_name}"
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error fetching data from table `{table_name}`: {e}")
+        return pd.DataFrame()
+
+def render_tab1_dashboard():
+    st.header("📊 Pipeline Dashboard")
+
+    st.subheader("📌 Key Metrics")
+
+    # Display toggle buttons with user-friendly labels
+    source_label = st.radio(
+        "Select data source for KPIs:",
+        options=["All time", "Live Status"],
+        horizontal=True,
+        index=1  # default to "Live Status"
+    )
+
+    # Map label to actual table name
+    table_map = {
+        "All time": "PipelineRuns",
+        "Live Status": "currentStatus"
+    }
+    selected_table = table_map[source_label]
+    # Fetch data based on selected table
+    df = fetch_pipeline_runs(table_name=selected_table)
+
+    if df.empty:
+        st.info(f"No data found in `{selected_table}` table.")
+        return
+
+    if 'Status' not in df.columns or 'PipelineName' not in df.columns:
+        st.warning("Required columns (like 'Status' and 'PipelineName') not found in the selected table.")
+        return
+
+    df['Status'] = df['Status'].str.lower()
+    df['PipelineName'] = df['PipelineName'].str.strip()
+
+    status_counts = df['Status'].value_counts()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("✅ Succeeded", int(status_counts.get('succeeded', 0)))
+    col2.metric("❌ Failed", int(status_counts.get('failed', 0)))
+    col3.metric("⏳ In Progress", int(status_counts.get('in progress', 0)) + int(status_counts.get('inprogress', 0)))
+    col4.metric("⏱️ Queued", int(status_counts.get('queued', 0)))
+
+    # Visualization 1: Donut chart from currentStatus
+    st.subheader("🧭 Live Status Distribution (Donut Chart)")
+
+    live_df = fetch_pipeline_runs("currentStatus")
+    if not live_df.empty:
+        live_df['Status'] = live_df['Status'].str.lower()
+        donut_data = live_df['Status'].value_counts().reset_index()
+        donut_data.columns = ['Status', 'Count']
+        st.plotly_chart(
+            px.pie(donut_data, names='Status', values='Count', hole=0.5, title="Current Pipeline Status"),
+            use_container_width=True
+        )
+    else:
+        st.info("No data available for live status visualization.")
+
+    # Visualization 2: Top 5 Pipelines with Most Failures
+    st.subheader("📉 Top 5 Pipelines by Failure Count")
+
+    history_df = fetch_pipeline_runs("PipelineRuns")
+    if not history_df.empty:
+        history_df['Status'] = history_df['Status'].str.lower()
+        history_df['PipelineName'] = history_df['PipelineName'].str.strip()
+
+        # Filter only failed runs
+        failed_df = history_df[history_df['Status'] == 'failed']
+
+        if failed_df.empty:
+            st.info("No failures recorded in historical data.")
+        else:
+            # Group by pipeline and count failures, sort and select top 5
+            top_failures = (
+                failed_df.groupby('PipelineName')
+                .size()
+                .reset_index(name='Failure Count')
+                .sort_values(by='Failure Count', ascending=False)
+                .head(5)
+            )
+
+            st.plotly_chart(
+                px.bar(
+                    top_failures,
+                    x='PipelineName',
+                    y='Failure Count',
+                    title="Top 5 Pipelines with Most Failures",
+                    text='Failure Count',
+                    color='PipelineName'
+                ).update_traces(textposition='outside'),
+                use_container_width=True
+            )
+    else:
+        st.info("No historical data available for bar chart visualization.")
+
+    # Visualization 3: Line chart of failures over time
+    st.subheader("📉 Failure Trend Over Time")
+
+    # Time grouping selector
+    time_granularity = st.selectbox(
+        "Group failures by:",
+        options=["Day", "Week", "Month"],
+        index=0  # Default to Day
+    )
+
+    failure_df = fetch_pipeline_runs("PipelineRuns")
+    if not failure_df.empty:
+        failure_df['Status'] = failure_df['Status'].str.lower()
+        failure_df['RunStart'] = pd.to_datetime(failure_df['RunStart'])
+
+        # Filter only failed runs
+        failure_df = failure_df[failure_df['Status'] == 'failed']
+
+        if time_granularity == "Day":
+            failure_df['Period'] = failure_df['RunStart'].dt.date
+        elif time_granularity == "Week":
+            failure_df['Period'] = failure_df['RunStart'].dt.to_period('W').apply(lambda r: r.start_time.date())
+        elif time_granularity == "Month":
+            failure_df['Period'] = failure_df['RunStart'].dt.to_period('M').apply(lambda r: r.start_time.date())
+
+        trend_data = failure_df.groupby('Period').size().reset_index(name='Failure Count')
+
+        st.plotly_chart(
+            px.line(trend_data, x='Period', y='Failure Count', markers=True,
+                    title=f"Pipeline Failures per {time_granularity}"),
+            use_container_width=True
+        )
+    else:
+        st.info("No failure data available for trend visualization.")
+
+def render_tab2_active_failures():
+    st.header("🚨 Active Pipeline Failures")
+
+    # Fetch data from currentStatus table
+    df = fetch_pipeline_runs(table_name="currentStatus")
+    if df.empty:
+        st.info("No data available in currentStatus table.")
+        return
+
+    df['Status'] = df['Status'].str.lower()
+    df['PipelineName'] = df['PipelineName'].str.strip()
+    df['RunStart'] = pd.to_datetime(df['RunStart']).dt.strftime('%m/%d/%Y, %I:%M:%S %p')
+
+    # Filter only failures
+    failed_df = df[df['Status'] == 'failed'].copy()
+
+    if failed_df.empty:
+        st.success("✅ No active pipeline failures at the moment.")
+        return
+
+    # Show tabular view of failed pipelines
+    st.dataframe(
+        failed_df[['PipelineName', 'RunStart', 'TriggeredBy', 'Error']],
+        use_container_width=True
+    )
+
+    st.markdown("---")
+    st.subheader("🤖 Ask AI to Debug a Failed Pipeline")
+
+    # Create a friendly key for selection
+    failed_df['PipelineKey'] = failed_df['PipelineName'] + " - " + failed_df['RunStart']
+    pipeline_keys = failed_df['PipelineKey'].tolist()
+
+    selected_pipeline_key = st.selectbox("Select a failed pipeline", pipeline_keys)
+
+    selected_row = failed_df[failed_df['PipelineKey'] == selected_pipeline_key]
+
+    if not selected_row.empty:
+        error_text = selected_row['Error'].values[0]
+
+        if st.button("🧠 Ask AI to Analyze Error"):
+            if not error_text or str(error_text).strip() == "":
+                st.info("No error message available for the selected pipeline.")
+            else:
+                messages = [
+                    SystemMessage(content="You are an expert Azure Data Factory and Databricks pipeline engineer. Help diagnose pipeline failures and suggest fixes."),
+                    HumanMessage(content=f"This is the error log for pipeline '{selected_pipeline_key}':\n\n{error_text}\n\nPlease analyze and suggest what went wrong and how to fix it.")
+                ]
+
+                with st.spinner("Thinking..."):
+                    response = model.invoke(messages)
+
+                st.subheader("🛠️ AI Suggestions")
+                st.markdown(response.content)
+
+import streamlit as st
+import pandas as pd
+
+def render_tab3_pipeline_inspector():
+    st.header("🔎 Pipeline Inspector")
+
+    # Fetch all historical runs
+    df = fetch_pipeline_runs("PipelineRuns")
+
+    if df.empty:
+        st.info("No pipeline logs found in PipelineRuns table.")
+        return
+
+    df['RunStart'] = pd.to_datetime(df['RunStart'])
+    df['RunEnd'] = pd.to_datetime(df['RunEnd'])
+    df['PipelineName'] = df['PipelineName'].str.strip()
+    pipeline_names = sorted(df['PipelineName'].unique().tolist())
+
+    # Select a pipeline
+    selected_pipeline = st.selectbox("Select a pipeline to inspect:", pipeline_names)
+
+    # Filter data for selected pipeline
+    pipeline_df = df[df['PipelineName'] == selected_pipeline].copy()
+
+    if pipeline_df.empty:
+        st.warning("No logs available for the selected pipeline.")
+        return
+
+    # Sort by most recent run
+    pipeline_df = pipeline_df.sort_values(by="RunStart", ascending=False).reset_index(drop=True)
+
+    # KPIs
+    latest_run = pipeline_df.iloc[0]
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📌 Current Status", latest_run['Status'])
+    col2.metric("⏱️ Last Run Start", latest_run['RunStart'].strftime('%Y-%m-%d %H:%M:%S'))
+    col3.metric("🕒 Last Duration", latest_run['Duration'])
+
+    st.markdown("---")
+    st.subheader(f"📋 Execution Log for '{selected_pipeline}'")
+
+    # Display log table
+    st.dataframe(
+        pipeline_df[['RunStart', 'RunEnd', 'Duration', 'Status', 'TriggeredBy', 'Error', 'RunID']],
+        use_container_width=True
+    )
+
+
 if __name__ == "__main__":
 
     st.set_page_config(page_title="ADF Logs Viewer", layout="wide")
     st.title("🔍 Azure Data Factory Toolkit")
+
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard","⚠️View Active Failures", "🔎Pipeline Inspector"])
+
+    with tab1:
+        render_tab1_dashboard()
+
+    with tab2:
+        render_tab2_active_failures()
+
+    with tab3:
+        render_tab3_pipeline_inspector()
 
     #Check and create status table if doesnt exists, also update latest log rows
     ensure_current_status_table_exists()
