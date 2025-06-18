@@ -1,0 +1,23 @@
+{
+    "pipeline1": {
+        "status": "Succeeded",
+        "last_run": "2025-06-10 09:30:00",
+        "error": "",
+        "runid": "uuid-105",
+        "reminder": 0
+    },
+    "pipeline2": {
+        "status": "Failed",
+        "last_run": "2025-06-10 09:25:00",
+        "error": "Mock failure error 4",
+        "runid": "uuid-104",
+        "reminder": 2
+    },
+    "pipeline3": {
+        "status": "Failed",
+        "last_run": "2025-06-10 09:20:00",
+        "error": "Mock failure error 3",
+        "runid": "uuid-103",
+        "reminder": 2
+    }
+}
