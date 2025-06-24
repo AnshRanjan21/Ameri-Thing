@@ -40,12 +40,12 @@ SENDER_EMAIL = "anuj2804j@gmail.com"
 SENDER_PASSWORD = "fsue ayla orye xlht"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-RECIPIENT_EMAIL = "abcAnujJ1@hexaware.com"
+RECIPIENT_EMAIL = "abc"
 
 DB_HOST = 'localhost'
 DB_PORT = 3306
 DB_USER = 'root'
-DB_PASSWORD = 'Hexaware@123'
+DB_PASSWORD = '123'
 DB_NAME = 'prototype2'
 DB_TABLE = 'PipelineRuns'
 STATUS_TABLE = 'currentStatus'
